@@ -1,7 +1,7 @@
 # crude 3D radiosity for shadowed ground-plane with levitating convex body
 # defined by flat faces.
 # Barnett, afternoon & evening of 2/2/26.
-using LinearAlgebra, GLMakie, StaticArrays, Printf, Base.Threads
+using LinearAlgebra, GLMakie, StaticArrays, Printf
 
 mutable struct Face      # doesn't need to be mutable if v changes
 	# non templated version
@@ -110,7 +110,7 @@ dinc = SVector{3}([-0.4,0.7,-1.0])  # incident light (parallel from infty)
 dinc /= norm(dinc)   # unit
 
 function inpoly2(x, v)   # x the pts (svec2), v is list of svec2
-	#https://wrfranklin.org/Research/Short_Notes/pnpoly.html
+	# translate of W R Franklin's https://wrfranklin.org/Research/Short_Notes/pnpoly.html
 	c = false
 	n = length(v)
 	for i=1:n
@@ -122,12 +122,12 @@ function inpoly2(x, v)   # x the pts (svec2), v is list of svec2
 	end
 	c
 end
-v2test = vec([SVector{2}(v[ii]) for v in f[2].v])   # test bot face in 2D
-@assert inpoly2(SVector{2}(0.0,0.0), v2test) 
-@assert ~inpoly2(SVector{2}(2.0,0.0), v2test) 
+ii=[1 2]; v2test = vec([SVector{2}(v[ii]) for v in f[2].v])   # test bot square face in 2D
+@assert inpoly2(SVector{2}(0.0,0.0), v2test)
+@assert ~inpoly2(SVector{2}(2.0,0.0), v2test)
 
 function hits(f::Face, b,r)   # ray:  b = base pt, r = direc  (unnormalized svecs)
-	# ray x(t) = b + t*r
+	# returns whether the ray x(t) = b + t*r hits the plane defined by Face f.
 	d = f.v[1]-b   # displacement to any pt in plane
 	n = f.n
 	t = dot(d,n) / dot(r,n)   # solve for ray param
@@ -160,19 +160,19 @@ end
 showdens(f, rhs)
 display(figd)
 
-# now fill nontrivial A block (>10 sec)...
+# now fill nontrivial K block (1 sec for 1e7 els)...
 Ng = f[1].N; Nc = N - Ng   # gnd + cuboid dofs
 function fillKgc(f,Ng,Nc)     # fill dense gndface-from-cuboid block of K
 	# (making a func allows better compilation)
 	K = zeros(Ng,Nc)      # upper right blocks of A
-	col = 1    # index in Agc
+	col = 1    # index in K
 	for k=2:length(f)       # faces
 		for j=1:f[k].N        # source index within kth face
 			for i=1:Ng         # row (targ)
-				dx = f[1].x[i] - f[k].x[j]  # displ = x-y  (target-from-src)
-				nydd = dot(dx, f[k].n)   # source normal,  n_y . (x-y)
+				r = f[1].x[i] - f[k].x[j]  # displ = x-y  (target-from-src)
+				nydd = dot(r, f[k].n)   # source normal,  n_y . (x-y)
 				# object above gndplane -> no need to test sign of targ normal
-				K[i,col] = nydd<0.0 ? 0.0 : -nydd*dot(dx,f[1].n)/(pi*norm(dx)^4)
+				K[i,col] = nydd<0.0 ? 0.0 : -nydd*dot(r, f[1].n)/(pi*norm(r)^4)
 			end
 			col+=1
 		end
@@ -181,17 +181,22 @@ function fillKgc(f,Ng,Nc)     # fill dense gndface-from-cuboid block of K
 end
 Kgc = fillKgc(f,Ng,Nc)
 Kcg = Kgc'   # do this to kernel (before quad wei)
-# applies off-diag blocks only (to quad-wei dens)...
+# applies off-diag blocks only, to quad-wei dens, ie A = K.diag(w) ...
 applyA(dens) = [Kgc*view(w.*dens,Ng+1:N); Kcg*view(w.*dens,1:Ng)] # w=quadr wei
 # sys is now (I-A).dens = rhs
 
 #axr = Axis3(figd[2, 1], aspect = :data, viewmode=:fit, title="radiosity soln")
 #axr.backgroundcolor = "black"   # didn't help remove black axes in axr
-dens = copy(rhs)   # init Picard iter: 0th term in Neumann series
-for k=1:10        # Picard iter
+
+#dens = copy(rhs)   # init Picard iter: 0th term in Neumann series
+dens = 0*rhs; dens[f[4].Noff+1] = 100.0    # unit source at one corner
+for k=1:10        # watch the Picard iters
 	@printf("total emitted power = %10.6g\t\tPicard iter %d...\n",sum(w.*dens),k)
 	dens += applyA(dens)
+	showdens(f, dens)
+	display(figd)
 end
-showdens(f, dens)
-# to do: try CG on I + K.   
-display(figd)
+# to do: 1) debug blowup ... prefactor too big?  Explore eigvals via Lanczos
+#        2) try CG on I-A
+
+
