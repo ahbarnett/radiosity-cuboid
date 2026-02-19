@@ -1,6 +1,7 @@
-# crude 3D radiosity for shadowed ground-plane with levitating convex body
+# Crude 3D radiosity for shadowed ground-plane with levitating convex body
 # defined by flat faces.
-# Barnett, afternoon & evening of 2/2/26.
+# Barnett, afternoon & evening of 2/2/26. Tidied 2/19/26.
+
 using LinearAlgebra, GLMakie, StaticArrays, Printf
 
 mutable struct Face      # doesn't need to be mutable if v changes
@@ -106,8 +107,7 @@ showdens(f, (1:N)/N)   # test all faces w/ graded dens
 #showdens(f[3], rand(f[3].N))   # top face missing?
 display(figd)
 
-dinc = SVector{3}([-0.4,0.7,-1.0])  # incident light (parallel from infty)
-dinc /= norm(dinc)   # unit
+# Filling right-hand side vector -----------------------
 
 function inpoly2(x, v)   # x the pts (svec2), v is list of svec2
 	# translate of W R Franklin's https://wrfranklin.org/Research/Short_Notes/pnpoly.html
@@ -122,7 +122,7 @@ function inpoly2(x, v)   # x the pts (svec2), v is list of svec2
 	end
 	c
 end
-ii=[1 2]; v2test = vec([SVector{2}(v[ii]) for v in f[2].v])   # test bot square face in 2D
+ii=[1 2]; v2test = vec([SVector{2}(v[ii]) for v in f[2].v])  # test bot square face in 2D
 @assert inpoly2(SVector{2}(0.0,0.0), v2test)
 @assert ~inpoly2(SVector{2}(2.0,0.0), v2test)
 
@@ -140,27 +140,46 @@ function hits(f::Face, b,r)   # ray:  b = base pt, r = direc  (unnormalized svec
 	#show(v2)
 	inpoly2(xh2, v2)
 end
+# test bottom face shadow on all pts x on gndplane...
+#dens1 = [Float64(~hits(f[2], x, dinc)) for x in f[1].x]
+#showdens(dens1); display(figd)
 
-#dens1 = [Float64(~hits(f[2], x, dinc)) for x in f[1].x]   # try all pts x on gnd face
-
-gndshad = fill(1.0, f[1].N)       # compute gnd plane shadow fac
-for j=2:nf
-	for i=1:length(gndshad)
-		gndshad[i] *= ~hits(f[j], f[1].x[i], dinc)
+function directillum(dinc)  # direct illumination from unit light from d_inc direction
+	gndshad = fill(1.0, f[1].N)       # compute gnd plane shadow fac
+	for j=2:nf
+		for i=1:length(gndshad)
+			gndshad[i] *= ~hits(f[j], f[1].x[i], dinc)  # each face illum multiplies
+		end
 	end
+	u = zeros(N)
+	#u = rand(N)             # debug
+	u[1:f[1].N] .= -dot(f[1].n,dinc) * gndshad   # gndplane: all same cos factor
+	# now fill RHS with shadowing and cosine factors (switch off cos<0)...
+	for j=2:nf       # RHS for remaining faces
+		cosfac = max(-dot(f[j].n,dinc), 0.0)
+		u[f[j].Noff .+ (1:f[j].N)] .= cosfac
+	end
+	return u
 end
-#dens = rand(N)
-rhs = zeros(N)
-rhs[1:f[1].N] .= -dot(f[1].n,dinc) * gndshad   # all same cos factor
-# now fill RHS with shadowing and cosine factors (switch off cos<0)...
-for j=2:nf       # RHS for remaining faces
-	cosfac = max(-dot(f[j].n,dinc), 0.0)
-	rhs[f[j].Noff .+ (1:f[j].N)] .= cosfac
+
+dinc = SVector{3}([-0.4,0.7,-1.0])  # incident light (parallel from infty)
+dinc /= norm(dinc)   # unit
+rhs = directillum(dinc)
+nlightsamps = 30        # >1 approximates a distributed light source (a bit slow)
+for l=2:nlightsamps
+	dincl = dinc + 0.05*rand(3); dincl /= norm(dincl)   # small param sets angular width
+	rhs += directillum(dincl)
 end
+rhs /= nlightsamps
+
+#rhs[f[4].Noff+1] = 100.0    # debug: unit source at one corner of cube
+#rhs = 0*rhs; rhs[1:Ng] .= 1.0   # debug: unif illum gndplane (1st reflection
+# to upsderside of cube should given slightly less than 1 in value).
+
 showdens(f, rhs)
 display(figd)
 
-# now fill nontrivial K block (1 sec for 1e7 els)...
+# operator: now fill nontrivial K block (1 sec for 1e7 els)...
 Ng = f[1].N; Nc = N - Ng   # gnd + cuboid dofs
 function fillKgc(f,Ng,Nc)     # fill dense gndface-from-cuboid block of K
 	# (making a func allows better compilation)
@@ -169,9 +188,11 @@ function fillKgc(f,Ng,Nc)     # fill dense gndface-from-cuboid block of K
 	for k=2:length(f)       # faces
 		for j=1:f[k].N        # source index within kth face
 			for i=1:Ng         # row (targ)
+				# using 1d indexing to the x node arrays here...
 				r = f[1].x[i] - f[k].x[j]  # displ = x-y  (target-from-src)
-				nydd = dot(r, f[k].n)   # source normal,  n_y . (x-y)
+				nydd = dot(r, f[k].n)   # source normal,  n_y . (x-y) = cos(theta).r
 				# object above gndplane -> no need to test sign of targ normal
+				# Now comes the main radiosity formula cos(phi) cos(theta) / (pi r^2):
 				K[i,col] = nydd<0.0 ? 0.0 : -nydd*dot(r, f[1].n)/(pi*norm(r)^4)
 			end
 			col+=1
@@ -180,23 +201,30 @@ function fillKgc(f,Ng,Nc)     # fill dense gndface-from-cuboid block of K
 	K
 end
 Kgc = fillKgc(f,Ng,Nc)
-Kcg = Kgc'   # do this to kernel (before quad wei)
+Kcg = Kgc'   # do this to kernel (before applying quad wei!)
 # applies off-diag blocks only, to quad-wei dens, ie A = K.diag(w) ...
 applyA(dens) = [Kgc*view(w.*dens,Ng+1:N); Kcg*view(w.*dens,1:Ng)] # w=quadr wei
-# sys is now (I-A).dens = rhs
+# lin sys to solve: (I-A).dens = rhs            (assume albedo rho ≡ 1)
 
 #axr = Axis3(figd[2, 1], aspect = :data, viewmode=:fit, title="radiosity soln")
 #axr.backgroundcolor = "black"   # didn't help remove black axes in axr
 
-#dens = copy(rhs)   # init Picard iter: 0th term in Neumann series
-dens = 0*rhs; dens[f[4].Noff+1] = 100.0    # unit source at one corner
-for k=1:10        # watch the Picard iters
+dens = 0*rhs;       # solution density, will accumulate Neumann series terms
+kryl = copy(rhs);   # init Picard iter: 0th term in Neumann series
+for k=1:20          # watch the Picard iters (multiple diffuse reflections)
+	dens += kryl
 	@printf("total emitted power = %10.6g\t\tPicard iter %d...\n",sum(w.*dens),k)
-	dens += applyA(dens)
-	showdens(f, dens)
+	kryl = applyA(kryl)        # next Krylov vector
+	showdens(f, dens); display(figd); #sleep(0.5)
+end
+
+if true  # Use CG on symmetrized version of (I-A)... 9 iters for 3 digits
+	using IterativeSolvers, LinearMaps
+	# left-precond by W = diag(w), to make symmetric:
+	matvec = LinearMap(x -> w.*(x .- applyA(x)), N, issymmetric=true)
+	dens2, ch = cg(matvec, w.*rhs, reltol=1e-3, log=true)    # ch = convergence history
+	@printf("CG done in %d its. rel 2-norm soln CG vs Picard %.3g\n", ch.iters, 
+				norm(dens-dens2)/norm(dens))
+	showdens(f, dens2)
 	display(figd)
 end
-# to do: 1) debug blowup ... prefactor too big?  Explore eigvals via Lanczos
-#        2) try CG on I-A
-
-
