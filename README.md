@@ -33,7 +33,7 @@ The direct illumination is as follows (notice the flat intensities on each non-g
 
 The radiosity solution is then, using either a few terms of the Neumann series, or a few CG iterations to get 3-digit accuracy:
 
-![geometry](pics/dend_soln.png)
+![geometry](pics/dens_soln.png)
 
 Notice the graded diffuse intensities showing multiple scattering,
 and realistically graded shadows.
