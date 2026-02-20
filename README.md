@@ -35,7 +35,8 @@ The radiosity solution is then, using either a few terms of the Neumann series, 
 
 ![geometry](pics/dens_soln.png)
 
-Notice the graded diffuse intensities showing multiple scattering,
+Notice the graded diffuse intensities showing multiple scattering
+(particularly between the ground face and the bottom cube face),
 and realistically graded shadows.
 
 
